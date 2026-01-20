@@ -1,0 +1,5 @@
+numpy==1.26.0
+librosa==0.10.1
+scipy
+soundfile
+yt-dlp
