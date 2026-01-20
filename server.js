@@ -9,7 +9,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// --- 1. Python Analysis Script ---
+// --- 1. Python Analysis Script (OPTIMIZED) ---
 const pythonScriptPath = path.join(__dirname, 'analyze.py');
 const pythonScriptContent = `
 import sys
@@ -22,7 +22,10 @@ warnings.filterwarnings('ignore')
 
 try:
     file_path = sys.argv[1]
-    y, sr = librosa.load(file_path, duration=60)
+    
+    # OPTIMIZATION: Only load 30 seconds (down from 60)
+    # This makes it 2x faster on free servers
+    y, sr = librosa.load(file_path, duration=30)
     
     # BPM
     onset_env = librosa.onset.onset_strength(y=y, sr=sr)
@@ -43,7 +46,7 @@ except Exception as e:
 `;
 fs.writeFileSync(pythonScriptPath, pythonScriptContent);
 
-// --- 2. Helper Function to Run Commands (Prevents Hanging) ---
+// --- 2. Helper Function (With longer timeout) ---
 const runCommand = (command, args) => {
     return new Promise((resolve, reject) => {
         const process = spawn(command, args);
@@ -54,7 +57,7 @@ const runCommand = (command, args) => {
         process.stderr.on('data', (data) => { 
             const chunk = data.toString();
             stderrData += chunk; 
-            console.log(chunk); // Stream logs to console so we see them LIVE
+            console.log(chunk); 
         });
 
         process.on('close', (code) => {
@@ -62,11 +65,12 @@ const runCommand = (command, args) => {
             else reject(new Error(stderrData));
         });
         
-        // Timeout after 60 seconds to prevent infinite hanging
+        // FIX: Increased timeout to 3 minutes (180,000ms)
+        // Free tier servers are slow, give them time to think.
         setTimeout(() => {
             process.kill();
-            reject(new Error("Timeout: Process took too long"));
-        }, 60000);
+            reject(new Error("Timeout: Process took longer than 3 minutes"));
+        }, 180000);
     });
 };
 
@@ -82,25 +86,21 @@ app.post('/analyze', async (req, res) => {
     console.log(`Starting Process for: ${cleanUrl}`);
 
     try {
-        // Step A: Download (Using Spawn + Anti-Hang Flags)
         console.log("...Downloading");
         await runCommand('yt-dlp', [
             '-x', '--audio-format', 'mp3',
             '--no-playlist',
-            '--force-ipv4',      // Fixes Render Network Issues
-            '--no-check-certificate', // Fixes SSL Handshake Hangs
+            '--force-ipv4',      
+            '--no-check-certificate', 
             '-o', tempFile,
             cleanUrl
         ]);
 
-        // Step B: Analyze
         console.log("...Analyzing");
         const analysisOutput = await runCommand('python3', [pythonScriptPath, tempFile]);
 
-        // Cleanup
         if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile);
 
-        // Parse JSON
         const jsonStr = analysisOutput.trim().split('\n').pop();
         const data = JSON.parse(jsonStr);
         
@@ -109,7 +109,6 @@ app.post('/analyze', async (req, res) => {
 
     } catch (error) {
         console.error("FAILED:", error.message);
-        // Ensure cleanup happens even on error
         if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile);
         
         res.status(500).json({ 
