@@ -18,7 +18,6 @@ import librosa
 import numpy as np
 import warnings
 
-# Suppress warnings to keep JSON output clean
 warnings.filterwarnings('ignore')
 
 try:
@@ -49,28 +48,27 @@ app.post('/analyze', async (req, res) => {
     const { url } = req.body;
     if (!url) return res.status(400).json({ error: "No URL provided" });
 
-    // Clean the URL (Remove ?si= tracking junk)
     const cleanUrl = url.split('?')[0];
-    
     const tempId = uuidv4();
     const tempFile = path.join(__dirname, `${tempId}.mp3`);
 
     console.log(`Processing: ${cleanUrl}`);
 
-    // THE FIX: Added User-Agent to trick SoundCloud
     const userAgent = '"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"';
-    const command = `yt-dlp -x --audio-format mp3 --no-playlist --user-agent ${userAgent} -o "${tempFile}" "${cleanUrl}"`;
+    
+    // FIX: Added --force-ipv4 to prevent hanging on Render
+    const command = `yt-dlp -x --audio-format mp3 --no-playlist --force-ipv4 --verbose --user-agent ${userAgent} -o "${tempFile}" "${cleanUrl}"`;
 
     // Step A: Download
     exec(command, (err, stdout, stderr) => {
         if (err) {
-            console.error("Download Error:", stderr); // Now we see the real error
-            return res.status(500).json({ error: "Download failed (Blocked by SoundCloud?)" });
+            console.error("Download Error (Logs):", stderr); // Verbose logs will show here
+            return res.status(500).json({ error: "Download failed. Check server logs." });
         }
 
         // Step B: Analyze
         exec(`python3 "${pythonScriptPath}" "${tempFile}"`, (pErr, pStdout, pStderr) => {
-            if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile); // Cleanup
+            if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile);
 
             if (pErr) {
                 console.error("Analysis Error:", pStderr);
@@ -78,12 +76,11 @@ app.post('/analyze', async (req, res) => {
             }
 
             try {
-                // Find the JSON part of the output (ignores any other logs)
                 const jsonStr = pStdout.trim().split('\n').pop();
                 const data = JSON.parse(jsonStr);
                 res.json(data);
             } catch (e) {
-                console.error("JSON Parse Error:", pStdout);
+                console.error("JSON Error:", pStdout);
                 res.status(500).json({ error: "Invalid Data from Analyzer" });
             }
         });
