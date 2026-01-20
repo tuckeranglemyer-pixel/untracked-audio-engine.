@@ -9,7 +9,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// --- 1. Python Analysis Script (OPTIMIZED) ---
+// --- 1. Python Analysis Script (FIXED: BPM Hinting) ---
 const pythonScriptPath = path.join(__dirname, 'analyze.py');
 const pythonScriptContent = `
 import sys
@@ -18,35 +18,39 @@ import librosa
 import numpy as np
 import warnings
 
+# Suppress warnings
 warnings.filterwarnings('ignore')
 
 try:
     file_path = sys.argv[1]
     
-    # OPTIMIZATION: Only load 30 seconds (down from 60)
-    # This makes it 2x faster on free servers
+    # Load 30 seconds
     y, sr = librosa.load(file_path, duration=30)
     
-    # BPM
+    # BPM DETECTION
     onset_env = librosa.onset.onset_strength(y=y, sr=sr)
-    tempo, _ = librosa.beat.beat_track(onset_envelope=onset_env, sr=sr)
     
-    # Key
+    # FIX: We add start_bpm=126. 
+    # This biases the math to look for Dance/Pop tempos (120-130)
+    # preventing the "83 BPM" half-time errors.
+    tempo, _ = librosa.beat.beat_track(onset_envelope=onset_env, sr=sr, start_bpm=126)
+    
+    # KEY DETECTION
     chroma = librosa.feature.chroma_cqt(y=y, sr=sr)
     key_index = np.argmax(np.sum(chroma, axis=1))
     pitches = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
     
+    # RESULT (Removed "Genre" so we don't overwrite SoundCloud data)
     print(json.dumps({
         "bpm": round(float(tempo), 1),
-        "key": pitches[key_index],
-        "genre": "House"
+        "key": pitches[key_index]
     }))
 except Exception as e:
     print(json.dumps({"error": str(e)}))
 `;
 fs.writeFileSync(pythonScriptPath, pythonScriptContent);
 
-// --- 2. Helper Function (With longer timeout) ---
+// --- 2. Helper Function (3-Minute Timeout) ---
 const runCommand = (command, args) => {
     return new Promise((resolve, reject) => {
         const process = spawn(command, args);
@@ -65,8 +69,6 @@ const runCommand = (command, args) => {
             else reject(new Error(stderrData));
         });
         
-        // FIX: Increased timeout to 3 minutes (180,000ms)
-        // Free tier servers are slow, give them time to think.
         setTimeout(() => {
             process.kill();
             reject(new Error("Timeout: Process took longer than 3 minutes"));
@@ -90,7 +92,7 @@ app.post('/analyze', async (req, res) => {
         await runCommand('yt-dlp', [
             '-x', '--audio-format', 'mp3',
             '--no-playlist',
-            '--force-ipv4',      
+            '--force-ipv4',
             '--no-check-certificate', 
             '-o', tempFile,
             cleanUrl
