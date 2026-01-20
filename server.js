@@ -1,6 +1,6 @@
 const express = require('express');
 const cors = require('cors');
-const { exec } = require('child_process');
+const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
@@ -43,7 +43,34 @@ except Exception as e:
 `;
 fs.writeFileSync(pythonScriptPath, pythonScriptContent);
 
-// --- 2. API Route ---
+// --- 2. Helper Function to Run Commands (Prevents Hanging) ---
+const runCommand = (command, args) => {
+    return new Promise((resolve, reject) => {
+        const process = spawn(command, args);
+        let stdoutData = '';
+        let stderrData = '';
+
+        process.stdout.on('data', (data) => { stdoutData += data.toString(); });
+        process.stderr.on('data', (data) => { 
+            const chunk = data.toString();
+            stderrData += chunk; 
+            console.log(chunk); // Stream logs to console so we see them LIVE
+        });
+
+        process.on('close', (code) => {
+            if (code === 0) resolve(stdoutData);
+            else reject(new Error(stderrData));
+        });
+        
+        // Timeout after 60 seconds to prevent infinite hanging
+        setTimeout(() => {
+            process.kill();
+            reject(new Error("Timeout: Process took too long"));
+        }, 60000);
+    });
+};
+
+// --- 3. API Route ---
 app.post('/analyze', async (req, res) => {
     const { url } = req.body;
     if (!url) return res.status(400).json({ error: "No URL provided" });
@@ -52,39 +79,44 @@ app.post('/analyze', async (req, res) => {
     const tempId = uuidv4();
     const tempFile = path.join(__dirname, `${tempId}.mp3`);
 
-    console.log(`Processing: ${cleanUrl}`);
+    console.log(`Starting Process for: ${cleanUrl}`);
 
-    const userAgent = '"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"';
-    
-    // FIX: Added --force-ipv4 to prevent hanging on Render
-    const command = `yt-dlp -x --audio-format mp3 --no-playlist --force-ipv4 --verbose --user-agent ${userAgent} -o "${tempFile}" "${cleanUrl}"`;
-
-    // Step A: Download
-    exec(command, (err, stdout, stderr) => {
-        if (err) {
-            console.error("Download Error (Logs):", stderr); // Verbose logs will show here
-            return res.status(500).json({ error: "Download failed. Check server logs." });
-        }
+    try {
+        // Step A: Download (Using Spawn + Anti-Hang Flags)
+        console.log("...Downloading");
+        await runCommand('yt-dlp', [
+            '-x', '--audio-format', 'mp3',
+            '--no-playlist',
+            '--force-ipv4',      // Fixes Render Network Issues
+            '--no-check-certificate', // Fixes SSL Handshake Hangs
+            '-o', tempFile,
+            cleanUrl
+        ]);
 
         // Step B: Analyze
-        exec(`python3 "${pythonScriptPath}" "${tempFile}"`, (pErr, pStdout, pStderr) => {
-            if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile);
+        console.log("...Analyzing");
+        const analysisOutput = await runCommand('python3', [pythonScriptPath, tempFile]);
 
-            if (pErr) {
-                console.error("Analysis Error:", pStderr);
-                return res.status(500).json({ error: "Analysis failed" });
-            }
+        // Cleanup
+        if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile);
 
-            try {
-                const jsonStr = pStdout.trim().split('\n').pop();
-                const data = JSON.parse(jsonStr);
-                res.json(data);
-            } catch (e) {
-                console.error("JSON Error:", pStdout);
-                res.status(500).json({ error: "Invalid Data from Analyzer" });
-            }
+        // Parse JSON
+        const jsonStr = analysisOutput.trim().split('\n').pop();
+        const data = JSON.parse(jsonStr);
+        
+        console.log("Success:", data);
+        res.json(data);
+
+    } catch (error) {
+        console.error("FAILED:", error.message);
+        // Ensure cleanup happens even on error
+        if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile);
+        
+        res.status(500).json({ 
+            error: "Process Failed", 
+            details: error.message.substring(0, 100) 
         });
-    });
+    }
 });
 
 const PORT = process.env.PORT || 10000;
