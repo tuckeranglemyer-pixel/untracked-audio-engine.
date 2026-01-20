@@ -54,7 +54,6 @@ app.post('/analyze', async (req, res) => {
     console.log(`Downloading: ${url}`);
 
     // Step A: Download with yt-dlp (System command)
-    // We use the 'yt-dlp' installed by Python in the Dockerfile
     exec(`yt-dlp -x --audio-format mp3 -o "${tempFile}" "${url}"`, (err, stdout, stderr) => {
         if (err) {
             console.error(stderr);
@@ -63,7 +62,7 @@ app.post('/analyze', async (req, res) => {
 
         // Step B: Analyze with Python
         exec(`python3 "${pythonScriptPath}" "${tempFile}"`, (pErr, pStdout, pStderr) => {
-            // Cleanup file to save space
+            // Cleanup file
             if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile);
 
             if (pErr) {
