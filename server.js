@@ -9,7 +9,7 @@ const app = express();
 app.use(cors()); // Allows your frontend to talk to this
 app.use(express.json());
 
-// 1. The Python Script (Embedded as a string to save you creating a 5th file)
+// 1. The Python Script (Embedded as a string)
 const pythonScriptPath = path.join(__dirname, 'analyze.py');
 const pythonScriptContent = `
 import sys
@@ -49,20 +49,21 @@ app.post('/analyze', async (req, res) => {
     if (!url) return res.status(400).json({ error: "No URL provided" });
 
     const tempId = uuidv4();
-    const tempFile = path.join(__dirname, \`\${tempId}.mp3\`);
+    const tempFile = path.join(__dirname, `${tempId}.mp3`);
 
-    console.log(\`Downloading: \${url}\`);
+    console.log(`Downloading: ${url}`);
 
     // Step A: Download with yt-dlp (System command)
-    exec(\`yt-dlp -x --audio-format mp3 -o "\${tempFile}" "\${url}"\`, (err, stdout, stderr) => {
+    // We use the 'yt-dlp' installed by Python in the Dockerfile
+    exec(`yt-dlp -x --audio-format mp3 -o "${tempFile}" "${url}"`, (err, stdout, stderr) => {
         if (err) {
             console.error(stderr);
             return res.status(500).json({ error: "Download failed" });
         }
 
         // Step B: Analyze with Python
-        exec(\`python3 "\${pythonScriptPath}" "\${tempFile}"\`, (pErr, pStdout, pStderr) => {
-            // Cleanup file
+        exec(`python3 "${pythonScriptPath}" "${tempFile}"`, (pErr, pStdout, pStderr) => {
+            // Cleanup file to save space
             if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile);
 
             if (pErr) {
@@ -81,4 +82,4 @@ app.post('/analyze', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => console.log(\`Audio Engine running on port \${PORT}\`));
+app.listen(PORT, () => console.log(`Audio Engine running on port ${PORT}`));
