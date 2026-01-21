@@ -9,7 +9,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// --- 1. Python Analysis Script (MASTER VERSION) ---
+// --- 1. Python Analysis Script (V3: THE PRECISION UPDATE) ---
 const pythonScriptPath = path.join(__dirname, 'analyze.py');
 const pythonScriptContent = `
 import sys
@@ -18,36 +18,49 @@ import librosa
 import numpy as np
 import warnings
 
+# Suppress warnings to keep JSON output clean
 warnings.filterwarnings('ignore')
 
 try:
     file_path = sys.argv[1]
     
-    # Load 30 seconds
+    # Load 30 seconds (Standard for EDM/Pop)
     y, sr = librosa.load(file_path, duration=30)
     
+    # --- PRO LOGIC: HPSS SEPARATION ---
+    # We split the audio into "Melodic" and "Percussive" layers.
+    # Analyzing BPM on the percussive layer only is MUCH more accurate for House/EDM.
+    y_harmonic, y_percussive = librosa.effects.hpss(y)
+    
     # BPM DETECTION
-    onset_env = librosa.onset.onset_strength(y=y, sr=sr)
+    onset_env = librosa.onset.onset_strength(y=y_percussive, sr=sr)
     
-    # We add start_bpm=126 to force House/Dance detection
-    tempo, _ = librosa.beat.beat_track(onset_envelope=onset_env, sr=sr, start_bpm=126)
+    # tightness=100 forces the algorithm to stay on a strict grid (Essential for DJs)
+    # start_bpm=128 pulls ambiguous results toward the House/Pop range
+    tempo, _ = librosa.beat.beat_track(
+        onset_envelope=onset_env, 
+        sr=sr, 
+        start_bpm=128,
+        tightness=100 
+    )
     
-    # KEY DETECTION
-    chroma = librosa.feature.chroma_cqt(y=y, sr=sr)
+    # KEY DETECTION (Performed on the Harmonic layer for better pitch clarity)
+    chroma = librosa.feature.chroma_cqt(y=y_harmonic, sr=sr)
     key_index = np.argmax(np.sum(chroma, axis=1))
     pitches = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
     
-    # We add "version" here so we can verify the deploy worked
     print(json.dumps({
         "bpm": round(float(tempo), 1),
         "key": pitches[key_index],
-        "version": "v2_FIXED"
+        "version": "v3_PRECISION" 
     }))
+
 except Exception as e:
     print(json.dumps({"error": str(e)}))
 `;
 fs.writeFileSync(pythonScriptPath, pythonScriptContent);
 
+// --- 2. Helper Function to Run Commands ---
 const runCommand = (command, args) => {
     return new Promise((resolve, reject) => {
         const process = spawn(command, args);
@@ -66,6 +79,7 @@ const runCommand = (command, args) => {
             else reject(new Error(stderrData));
         });
         
+        // Timeout: 3 Minutes (Required for Render Starter Plan)
         setTimeout(() => {
             process.kill();
             reject(new Error("Timeout: Process took longer than 3 minutes"));
@@ -73,6 +87,7 @@ const runCommand = (command, args) => {
     });
 };
 
+// --- 3. API Route ---
 app.post('/analyze', async (req, res) => {
     const { url } = req.body;
     if (!url) return res.status(400).json({ error: "No URL provided" });
@@ -90,7 +105,7 @@ app.post('/analyze', async (req, res) => {
             '--no-playlist',
             '--force-ipv4',
             '--no-check-certificate', 
-            '--prefer-free-formats', // Added for extra stability
+            '--prefer-free-formats',
             '-o', tempFile,
             cleanUrl
         ]);
